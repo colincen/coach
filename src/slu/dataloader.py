@@ -59,7 +59,15 @@ def collate_fn(data):
         padded_seqs[i, :length] = torch.LongTensor(seq)
     lengths = torch.LongTensor(lengths)
     domains = torch.LongTensor(domains)
-    
+    # print(padded_seqs)
+    # print('-'*20)
+    # print(lengths)
+    # print('-'*20)
+    # print(y1)
+    # print('-'*20)
+    # print(y2)
+    # print('-'*20)
+    # print(domains)
     return padded_seqs, lengths, y1, y2, domains
 
 
