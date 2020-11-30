@@ -64,6 +64,15 @@ def collate_fn(data):
 
 
 def get_dataloader(tgt_domain, batch_size, use_label_encoder, n_samples):
+
+    # print(tgt_domain)
+    # print('-'*20)
+    # print(batch_size)
+    # print('-'*20)
+    # print(use_label_encoder)
+    # print('-'*20)
+    # print(n_samples)
+
     all_data, vocab = datareader(use_label_encoder)
     if use_label_encoder:
         train_data = {"utter": [], "y1": [], "y2": [], "domains": [], "template_list": []}
