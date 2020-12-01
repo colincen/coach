@@ -1,4 +1,3 @@
-
 from src.slu.datareader import PAD_INDEX
 from src.utils import load_embedding, load_embedding_from_npy
 import torch
@@ -6,6 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from torch.autograd import Variable
+import torch.nn.utils.rnn as rnn_utils
 import numpy as np
 import math
 
@@ -21,7 +21,7 @@ class Lstm(nn.Module):
         self.freeze_emb = params.freeze_emb
         self.emb_file = params.emb_file
 
-        # embedding layer
+        # # embedding layer
         self.embedding = nn.Embedding(self.n_words, self.emb_dim, padding_idx=PAD_INDEX)
         # load embedding
         if self.emb_file.endswith("npy"):
@@ -29,13 +29,18 @@ class Lstm(nn.Module):
         else:
             embedding = load_embedding(vocab, self.emb_dim, self.emb_file)
         self.embedding.weight.data.copy_(torch.FloatTensor(embedding))
+        # self.embedding = nn.Embedding.from_pretrained(torch.from_numpy(embeddin.astype(np.float32)), padding_idx=PAD_INDEX)
         
+
+        # print(self.embedding.weight.data.size())
+
         # LSTM layers
-        self.lstm = nn.LSTM(self.emb_dim, self.hidden_dim, num_layers=self.n_layer, 
+        self.lstm = nn.LSTM(input_size = self.emb_dim, 
+                            hidden_size=self.hidden_dim, num_layers=self.n_layer, 
                         dropout=self.dropout, bidirectional=self.bidirection, batch_first=True)
         
        
-    def forward(self, X):
+    def forward(self, X, lengths):
         """
         Input:
             x: text (bsz, seq_len)
@@ -43,12 +48,21 @@ class Lstm(nn.Module):
             last_layer: last layer of lstm (bsz, seq_len, hidden_dim)
         """
         embeddings = self.embedding(X)
+        # print(embeddings)
         embeddings = embeddings.detach() if self.freeze_emb else embeddings
         embeddings = F.dropout(embeddings, p=self.dropout, training=self.training)
 
         # LSTM
         # lstm_output (batch_first): (bsz, seq_len, hidden_dim)
-        lstm_output, (_, _) = self.lstm(embeddings)
+        # print(embeddings.size())
+        # print(lengths)
+        # print(X)
+        packed = rnn_utils.pack_padded_sequence(embeddings, lengths.cpu().data.numpy(), batch_first=True, enforce_sorted=False)
+        lstm_output,  _ = self.lstm(packed)
+        lstm_output, _ = rnn_utils.pad_packed_sequence(lstm_output, batch_first = True)
+        # print(lstm_output.size())
+
+        # lstm_output = embeddings
 
         return lstm_output
 
@@ -124,10 +138,11 @@ class CRF(nn.Module):
 
     def forward(self, feats):
         # Shape checks
-        if len(feats.shape) != 3:
-            raise ValueError("feats must be 3-d got {}-d".format(feats.shape))
+        with torch.autograd.set_detect_anomaly(True):
+            if len(feats.shape) != 3:
+                raise ValueError("feats must be 3-d got {}-d".format(feats.shape))
 
-        return self._viterbi(feats)
+            return self._viterbi(feats)
 
     def loss(self, feats, tags):
         """
@@ -142,22 +157,23 @@ class CRF(nn.Module):
             Negative log likelihood [a scalar] 
         """
         # Shape checks
-        if len(feats.shape) != 3:
-            raise ValueError("feats must be 3-d got {}-d".format(feats.shape))
+        with torch.autograd.set_detect_anomaly(True):
+            if len(feats.shape) != 3:
+                raise ValueError("feats must be 3-d got {}-d".format(feats.shape))
 
-        if len(tags.shape) != 2:
-            raise ValueError('tags must be 2-d but got {}-d'.format(tags.shape))
+            if len(tags.shape) != 2:
+                raise ValueError('tags must be 2-d but got {}-d'.format(tags.shape))
 
-        if feats.shape[:2] != tags.shape:
-            raise ValueError('First two dimensions of feats and tags must match ', feats.shape, tags.shape)
+            if feats.shape[:2] != tags.shape:
+                raise ValueError('First two dimensions of feats and tags must match ', feats.shape, tags.shape)
 
-        sequence_score = self._sequence_score(feats, tags)
-        partition_function = self._partition_function(feats)
-        log_probability = sequence_score - partition_function
+            sequence_score = self._sequence_score(feats, tags)
+            partition_function = self._partition_function(feats)
+            log_probability = sequence_score - partition_function
 
-        # -ve of l()
-        # Average across batch
-        return -log_probability.mean()
+            # -ve of l()
+            # Average across batch
+            return -log_probability.mean()
 
     def _sequence_score(self, feats, tags):
         """
@@ -167,27 +183,27 @@ class CRF(nn.Module):
                     0 and num_tags
         Returns: Sequence score of shape [batch size]
         """
+        with torch.autograd.set_detect_anomaly(True):
+            batch_size = feats.shape[0]
 
-        batch_size = feats.shape[0]
+            # Compute feature scores
+            feat_score = feats.gather(2, tags.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
 
-        # Compute feature scores
-        feat_score = feats.gather(2, tags.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
+            # print(feat_score.size())
 
-        # print(feat_score.size())
+            # Compute transition scores
+            # Unfold to get [from, to] tag index pairs
+            tags_pairs = tags.unfold(1, 2, 1)
 
-        # Compute transition scores
-        # Unfold to get [from, to] tag index pairs
-        tags_pairs = tags.unfold(1, 2, 1)
+            # Use advanced indexing to pull out required transition scores
+            indices = tags_pairs.permute(2, 0, 1).chunk(2)
+            trans_score = self.transitions[indices].squeeze(0).sum(dim=-1)
 
-        # Use advanced indexing to pull out required transition scores
-        indices = tags_pairs.permute(2, 0, 1).chunk(2)
-        trans_score = self.transitions[indices].squeeze(0).sum(dim=-1)
+            # Compute start and stop scores
+            start_score = self.start_transitions[tags[:, 0]]
+            stop_score = self.stop_transitions[tags[:, -1]]
 
-        # Compute start and stop scores
-        start_score = self.start_transitions[tags[:, 0]]
-        stop_score = self.stop_transitions[tags[:, -1]]
-
-        return feat_score + start_score + trans_score + stop_score
+            return feat_score + start_score + trans_score + stop_score
 
     def _partition_function(self, feats):
         """
@@ -199,19 +215,20 @@ class CRF(nn.Module):
         Returns:
             Total scores of shape [batch size]
         """
-        _, seq_size, num_tags = feats.shape
+        with torch.autograd.set_detect_anomaly(True):
+            _, seq_size, num_tags = feats.shape
 
-        if self.num_tags != num_tags:
-            raise ValueError('num_tags should be {} but got {}'.format(self.num_tags, num_tags))
+            if self.num_tags != num_tags:
+                raise ValueError('num_tags should be {} but got {}'.format(self.num_tags, num_tags))
 
-        a = feats[:, 0] + self.start_transitions.unsqueeze(0) # [batch_size, num_tags]
-        transitions = self.transitions.unsqueeze(0) # [1, num_tags, num_tags] from -> to
+            a = feats[:, 0] + self.start_transitions.unsqueeze(0) # [batch_size, num_tags]
+            transitions = self.transitions.unsqueeze(0) # [1, num_tags, num_tags] from -> to
 
-        for i in range(1, seq_size):
-            feat = feats[:, i].unsqueeze(1) # [batch_size, 1, num_tags]
-            a = self._log_sum_exp(a.unsqueeze(-1) + transitions + feat, 1) # [batch_size, num_tags]
+            for i in range(1, seq_size):
+                feat = feats[:, i].unsqueeze(1) # [batch_size, 1, num_tags]
+                a = self._log_sum_exp(a.unsqueeze(-1) + transitions + feat, 1) # [batch_size, num_tags]
 
-        return self._log_sum_exp(a + self.stop_transitions.unsqueeze(0), 1) # [batch_size]
+            return self._log_sum_exp(a + self.stop_transitions.unsqueeze(0), 1) # [batch_size]
 
     def _viterbi(self, feats):
         """
@@ -220,41 +237,43 @@ class CRF(nn.Module):
             feats: Input features [batch size, sequence length, number of tags]
         Returns: Best tag sequence [batch size, sequence length]
         """
-        _, seq_size, num_tags = feats.shape
+        with torch.autograd.set_detect_anomaly(True):
+            _, seq_size, num_tags = feats.shape
 
-        if self.num_tags != num_tags:
-            raise ValueError('num_tags should be {} but got {}'.format(self.num_tags, num_tags))
-        
-        v = feats[:, 0] + self.start_transitions.unsqueeze(0) # [batch_size, num_tags]
-        transitions = self.transitions.unsqueeze(0) # [1, num_tags, num_tags] from -> to
-        paths = []
-
-        for i in range(1, seq_size):
-            feat = feats[:, i] # [batch_size, num_tags]
-            v, idx = (v.unsqueeze(-1) + transitions).max(1) # [batch_size, num_tags], [batch_size, num_tags]
+            if self.num_tags != num_tags:
+                raise ValueError('num_tags should be {} but got {}'.format(self.num_tags, num_tags))
             
-            paths.append(idx)
-            v = (v + feat) # [batch_size, num_tags]
+            v = feats[:, 0] + self.start_transitions.unsqueeze(0) # [batch_size, num_tags]
+            transitions = self.transitions.unsqueeze(0) # [1, num_tags, num_tags] from -> to
+            paths = []
 
-        
-        v, tag = (v + self.stop_transitions.unsqueeze(0)).max(1, True)
+            for i in range(1, seq_size):
+                feat = feats[:, i] # [batch_size, num_tags]
+                v, idx = (v.unsqueeze(-1) + transitions).max(1) # [batch_size, num_tags], [batch_size, num_tags]
+                
+                paths.append(idx)
+                v = (v + feat) # [batch_size, num_tags]
 
-        # Backtrack
-        tags = [tag]
-        for idx in reversed(paths):
-            tag = idx.gather(1, tag)
-            tags.append(tag)
+            
+            v, tag = (v + self.stop_transitions.unsqueeze(0)).max(1, True)
 
-        tags.reverse()
-        return torch.cat(tags, 1)
+            # Backtrack
+            tags = [tag]
+            for idx in reversed(paths):
+                tag = idx.gather(1, tag)
+                tags.append(tag)
+
+            tags.reverse()
+            return torch.cat(tags, 1)
 
     
     def _log_sum_exp(self, logits, dim):
         """
         Computes log-sum-exp in a stable way
         """
-        max_val, _ = logits.max(dim)
-        return max_val + (logits - max_val.unsqueeze(dim)).exp().sum(dim).log()
+        with torch.autograd.set_detect_anomaly(True):
+            max_val, _ = logits.max(dim)
+            return max_val + (logits - max_val.unsqueeze(dim)).exp().sum(dim).log()
 
 
 ### Modules for transformer

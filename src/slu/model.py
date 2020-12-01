@@ -18,7 +18,7 @@ class BinarySLUTagger(nn.Module):
         self.linear = nn.Linear(self.hidden_dim, self.num_binslot)
         self.crf_layer = CRF(self.num_binslot)
         
-    def forward(self, X, lengths=None):
+    def forward(self, X, lengths):
         """
         Input: 
             X: (bsz, seq_len)
@@ -26,7 +26,8 @@ class BinarySLUTagger(nn.Module):
             prediction: (bsz, seq_len, num_binslot)
             lstm_hidden: (bsz, seq_len, hidden_size)
         """
-        lstm_hidden = self.lstm(X)  # (bsz, seq_len, hidden_dim)
+        
+        lstm_hidden = self.lstm(X, lengths)  # (bsz, seq_len, hidden_dim)
         prediction = self.linear(lstm_hidden)
 
         return prediction, lstm_hidden
@@ -39,10 +40,11 @@ class BinarySLUTagger(nn.Module):
         Ouput:
             crf_loss: loss of crf
         """
-        prediction = self.crf_layer(inputs)
-        prediction = [ prediction[i, :length].data.cpu().numpy() for i, length in enumerate(lengths) ]
+        with torch.autograd.set_detect_anomaly(True):
+            prediction = self.crf_layer(inputs)
+            prediction = [ prediction[i, :length].data.cpu().numpy() for i, length in enumerate(lengths) ]
 
-        return prediction
+            return prediction
     
     def crf_loss(self, inputs, lengths, y):
         """ create crf loss
@@ -53,22 +55,24 @@ class BinarySLUTagger(nn.Module):
         Ouput:
             crf_loss: loss of crf
         """
-        padded_y = self.pad_label(lengths, y)
-        crf_loss = self.crf_layer.loss(inputs, padded_y)
+        with torch.autograd.set_detect_anomaly(True):
+            padded_y = self.pad_label(lengths, y)
+            crf_loss = self.crf_layer.loss(inputs, padded_y)
 
-        return crf_loss
+            return crf_loss
 
     def pad_label(self, lengths, y):
-        bsz = len(lengths)
-        max_len = torch.max(lengths)
-        padded_y = torch.LongTensor(bsz, max_len).fill_(SLOT_PAD)
-        for i in range(bsz):
-            length = lengths[i]
-            y_i = y[i]
-            padded_y[i, 0:length] = torch.LongTensor(y_i)
+        with torch.autograd.set_detect_anomaly(True):
+            bsz = len(lengths)
+            max_len = torch.max(lengths)
+            padded_y = torch.LongTensor(bsz, max_len).fill_(SLOT_PAD)
+            for i in range(bsz):
+                length = lengths[i]
+                y_i = y[i]
+                padded_y[i, 0:length] = torch.LongTensor(y_i)
 
-        padded_y = padded_y.cuda()
-        return padded_y
+            padded_y = padded_y.cuda()
+            return padded_y
 
 
 class SlotNamePredictor(nn.Module):
@@ -82,6 +86,8 @@ class SlotNamePredictor(nn.Module):
             self.lstm_enc = nn.LSTM(self.input_dim, params.trs_hidden_dim//2, num_layers=params.trs_layers, bidirectional=True, batch_first=True)
         
         self.slot_embs = load_embedding_from_pkl(params.slot_emb_file)
+
+        
     
     def forward(self, domains, hidden_layers, binary_preditions=None, binary_golds=None, final_golds=None):
         """
@@ -95,6 +101,14 @@ class SlotNamePredictor(nn.Module):
             pred_slotname_list: list of predicted slot names
             gold_slotname_list: list of gold slot names  (only return this in the training mode)
         """
+        
+        # print(domains)
+        # print(hidden_layers)
+        # print(binary_preditions)
+        # print(binary_golds)
+        # print(final_golds)
+        # print('-'*30)
+
         binary_labels = binary_golds if binary_golds is not None else binary_preditions
 
         feature_list = []
@@ -107,9 +121,11 @@ class SlotNamePredictor(nn.Module):
         ### collect features of slot and their corresponding labels (gold_slotname) in this batch
         for i in range(bsz):
             dm_id = domains[i]
+            # print(dm_id)
             domain_name = domain_set[dm_id]
+            # print(domain_name)
             slot_list_based_domain = domain2slot[domain_name]  # a list of slot names
-
+            # print(slot_list_based_domain)
             # we can also add domain embeddings after transformer encoder
             hidden_i = hidden_layers[i]    # (seq_len, hidden_dim)
 
@@ -124,9 +140,15 @@ class SlotNamePredictor(nn.Module):
             # get indices of B and I
             B_list = bin_label == 1
             I_list = bin_label == 2
+
+            # B_list 中True的坐标
             nonzero_B = torch.nonzero(B_list)
+            
+            
             num_slotname = nonzero_B.size()[0]
             
+
+
             if num_slotname == 0:
                 feature_list.append(feature_each_sample)
                 continue
@@ -141,7 +163,10 @@ class SlotNamePredictor(nn.Module):
                     nonzero_I = torch.nonzero(I_list[prev_index: curr_index])
 
                     if len(nonzero_I) != 0:
+
+                        # prev_index 是左边的起点，相当于偏移量
                         nonzero_I = (nonzero_I + prev_index).squeeze(1) # squeeze to one dimension
+
                         indices = torch.cat((prev_index, nonzero_I), dim=0)
                         hiddens_based_slotname = hidden_i[indices.unsqueeze(0)]   # (1, subseq_len, hidden_dim)
                     else:
@@ -210,12 +235,14 @@ class SlotNamePredictor(nn.Module):
                 # only in the evaluation phrase
                 pred_slotname_each_sample = None
             else:
+                # print(feature_each_sample.size())
+                # print(slot_embs_based_domain.size())
                 pred_slotname_each_sample = torch.matmul(feature_each_sample, slot_embs_based_domain) # (num_slotname, slot_num)
             
             pred_slotname_list.append(pred_slotname_each_sample)
 
         if final_golds is not None:
-            # only in the training mode
+            # only in the training model
             return pred_slotname_list, gold_slotname_list
         else:
             return pred_slotname_list
@@ -246,24 +273,25 @@ class SentRepreGenerator(nn.Module):
             input_sent_repre: (bsz, hidden_size)
         """
         # generate templates sentence representation
-        template0 = templates[:, 0, :]
-        template1 = templates[:, 1, :]
-        template2 = templates[:, 2, :]
+        with torch.autograd.set_detect_anomaly(True):
+            template0 = templates[:, 0, :]
+            template1 = templates[:, 1, :]
+            template2 = templates[:, 2, :]
 
-        template0_hiddens = self.template_encoder(template0)
-        template1_hiddens = self.template_encoder(template1)
-        template2_hiddens = self.template_encoder(template2)
+            template0_hiddens = self.template_encoder(template0)
+            template1_hiddens = self.template_encoder(template1)
+            template2_hiddens = self.template_encoder(template2)
 
-        template0_repre, _ = self.template_attn_layer(template0_hiddens, tem_lengths)
-        template1_repre, _ = self.template_attn_layer(template1_hiddens, tem_lengths)
-        template2_repre, _ = self.template_attn_layer(template2_hiddens, tem_lengths)
+            template0_repre, _ = self.template_attn_layer(template0_hiddens, tem_lengths)
+            template1_repre, _ = self.template_attn_layer(template1_hiddens, tem_lengths)
+            template2_repre, _ = self.template_attn_layer(template2_hiddens, tem_lengths)
 
-        templates_repre = torch.stack((template0_repre, template1_repre, template2_repre), dim=1)  # (bsz, 3, hidden_size)
+            templates_repre = torch.stack((template0_repre, template1_repre, template2_repre), dim=1)  # (bsz, 3, hidden_size)
 
-        # generate input sentence representations
-        input_repre, _ = self.input_atten_layer(hidden_layers, x_lengths)
+            # generate input sentence representations
+            input_repre, _ = self.input_atten_layer(hidden_layers, x_lengths)
 
-        return templates_repre, input_repre
+            return templates_repre, input_repre
 
 
 class SLUTagger(nn.Module):
@@ -284,8 +312,9 @@ class SLUTagger(nn.Module):
             prediction: (bsz, seq_len, num_slot)
             lstm_hidden: (bsz, seq_len, hidden_size)
         """
-        lstm_hidden = self.lstm(X)  # (bsz, seq_len, hidden_dim)
-        prediction = self.linear(lstm_hidden)
+        with torch.autograd.set_detect_anomaly(True):
+            lstm_hidden = self.lstm(X)  # (bsz, seq_len, hidden_dim)
+            prediction = self.linear(lstm_hidden)
 
         return prediction
     
@@ -297,10 +326,11 @@ class SLUTagger(nn.Module):
         Ouput:
             crf_loss: loss of crf
         """
-        prediction = self.crf_layer(inputs)
-        prediction = [ prediction[i, :length].data.cpu().numpy() for i, length in enumerate(lengths) ]
+        with torch.autograd.set_detect_anomaly(True):
+            prediction = self.crf_layer(inputs)
+            prediction = [ prediction[i, :length].data.cpu().numpy() for i, length in enumerate(lengths) ]
 
-        return prediction
+            return prediction
     
     def crf_loss(self, inputs, lengths, y):
         """ create crf loss
@@ -311,20 +341,22 @@ class SLUTagger(nn.Module):
         Ouput:
             crf_loss: loss of crf
         """
-        padded_y = self.pad_label(lengths, y)
-        crf_loss = self.crf_layer.loss(inputs, padded_y)
+        with torch.autograd.set_detect_anomaly(True):
+            padded_y = self.pad_label(lengths, y)
+            crf_loss = self.crf_layer.loss(inputs, padded_y)
 
-        return crf_loss
+            return crf_loss
 
     def pad_label(self, lengths, y):
-        bsz = len(lengths)
-        max_len = torch.max(lengths)
-        padded_y = torch.LongTensor(bsz, max_len).fill_(SLOT_PAD)
-        for i in range(bsz):
-            length = lengths[i]
-            y_i = y[i]
-            padded_y[i, 0:length] = torch.LongTensor(y_i)
+        with torch.autograd.set_detect_anomaly(True):
+            bsz = len(lengths)
+            max_len = torch.max(lengths)
+            padded_y = torch.LongTensor(bsz, max_len).fill_(SLOT_PAD)
+            for i in range(bsz):
+                length = lengths[i]
+                y_i = y[i]
+                padded_y[i, 0:length] = torch.LongTensor(y_i)
 
-        padded_y = padded_y.cuda()
-        return padded_y
+            padded_y = padded_y.cuda()
+            return padded_y
         

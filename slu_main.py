@@ -17,8 +17,12 @@ def main(params):
 
     # build model
     binary_slutagger = BinarySLUTagger(params, vocab)
+    
     slotname_predictor = SlotNamePredictor(params)
     binary_slutagger, slotname_predictor = binary_slutagger.cuda(), slotname_predictor.cuda()
+
+    # for i in binary_slutagger.named_parameters():
+    #     print(i)
     if params.tr:
         sent_repre_generator = SentRepreGenerator(params, vocab)
         sent_repre_generator = sent_repre_generator.cuda()

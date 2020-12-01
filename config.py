@@ -12,8 +12,8 @@ def get_params():
     parser.add_argument("--epoch", type=int, default=300, help="number of maximum epoch")
     parser.add_argument("--tgt_dm", type=str, default="", help="target_domain")
     parser.add_argument("--emb_file", type=str, default="./data/snips/emb/slu_word_char_embs.npy", help="embeddings file")  # slu_embs.npy w/o char embeddings   slu_word_char_embs.npy w/ char embeddings  slu_word_char_embs_with_slotembs.npy  w/ char and slot embs
-    parser.add_argument("--emb_dim", type=int, default=400, help="embedding dimension")
-    parser.add_argument("--batch_size", type=int, default=32, help="batch size")
+    parser.add_argument("--emb_dim", type=int, default=400, help="embedding dimension") #400
+    parser.add_argument("--batch_size", type=int, default=6, help="batch size")
     parser.add_argument("--num_binslot", type=int, default=3, help="number of binary slot O,B,I")
     parser.add_argument("--num_slot", type=int, default=72, help="number of slot types")
     parser.add_argument("--num_domain", type=int, default=7, help="number of domain")
@@ -23,7 +23,7 @@ def get_params():
     parser.add_argument("--bidirection", default=False, action="store_true", help="Bidirectional lstm")
     parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
     parser.add_argument("--dropout", type=float, default=0.3, help="dropout rate")
-    parser.add_argument("--hidden_dim", type=int, default=200, help="hidden dimension for LSTM")
+    parser.add_argument("--hidden_dim", type=int, default=200, help="hidden dimension for LSTM")#200
     parser.add_argument("--n_layer", type=int, default=2, help="number of layers for LSTM")
     parser.add_argument("--early_stop", type=int, default=5, help="No improvement after several epoch, we stop training")
     parser.add_argument("--binary", default=False, action="store_true", help="conduct binary training only")
@@ -39,7 +39,7 @@ def get_params():
 
     # transformer parameters
     parser.add_argument("--num_heads", type=int, default=4, help="Number of heads for transformer")
-    parser.add_argument("--trs_hidden_dim", type=int, default=400, help="Dimension after combined into word level")
+    parser.add_argument("--trs_hidden_dim", type=int, default=400, help="Dimension after combined into word level")#400
     parser.add_argument("--filter_size", type=int, default=64, help="Hidden size of the middle layer in FFN")
     parser.add_argument("--dim_key", type=int, default=0, help="Key dimension in transformer (if 0, then would be the same as hidden_size)")
     parser.add_argument("--dim_value", type=int, default=0, help="Value dimension in transformer (if 0, then would be the same as hidden_size)")
